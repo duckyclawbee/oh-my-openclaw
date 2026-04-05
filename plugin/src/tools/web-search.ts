@@ -1,11 +1,8 @@
 import { Type } from '@sinclair/typebox';
-import { execFile } from 'child_process';
 
 import type { OpenClawPluginApi } from '../types.js';
 import { TOOL_PREFIX } from '../constants.js';
 import { toolResponse, toolError } from '../utils/helpers.js';
-
-const GEMINI_TIMEOUT_MS = 90_000;
 
 interface WebSearchParams {
   query: string;
@@ -16,7 +13,7 @@ export function registerWebSearchTool(api: OpenClawPluginApi) {
   api.registerTool({
     name: `${TOOL_PREFIX}web_search`,
     description:
-      'Search the web using Gemini CLI with Google Search grounding. Returns markdown text with grounded results.',
+      'Prepare a grounded web research request using native OpenClaw web tools or a research sub-agent.',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query or question to answer using web search' }),
       model: Type.Optional(
@@ -32,30 +29,21 @@ export function registerWebSearchTool(api: OpenClawPluginApi) {
         return toolError('Query is required and must not be empty');
       }
 
-      const model = params.model ?? 'gemini-3-flash-preview';
+      const preferredModel = params.model?.trim();
+      const instruction = [
+        'Perform grounded web research now.',
+        '',
+        'Preferred execution order:',
+        '1. Use a native OpenClaw web search or browser tool if available.',
+        '2. If native search is unavailable, call sessions_spawn with agentId "omoc_librarian" and complete the research there.',
+        '',
+        `Query: ${query}`,
+        preferredModel ? `Preferred model hint: ${preferredModel}` : '',
+        '',
+        'Return a concise answer with source links or citations where available.',
+      ].filter(Boolean).join('\n');
 
-      return new Promise((resolve) => {
-        execFile(
-          'gemini',
-          ['-m', model, '--prompt', query, '-o', 'text'],
-          { timeout: GEMINI_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-          (error, stdout, stderr) => {
-            if (error) {
-              const message = stderr?.trim() || error.message || 'Gemini CLI execution failed';
-              resolve(toolError(message));
-              return;
-            }
-
-            const result = stdout?.trim();
-            if (!result) {
-              resolve(toolError('Gemini CLI returned empty output'));
-              return;
-            }
-
-            resolve(toolResponse(result));
-          },
-        );
-      });
+      return toolResponse(instruction);
     },
     optional: true,
   });

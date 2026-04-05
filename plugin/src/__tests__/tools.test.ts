@@ -13,11 +13,6 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-  execSync: vi.fn(),
-  execFile: vi.fn(),
-}));
-
 vi.mock('../utils/state.js', () => ({
   readState: vi.fn(),
   writeState: vi.fn(),
@@ -30,7 +25,6 @@ vi.mock('../utils/config.js', () => ({
   })),
 }));
 
-import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { registerDelegateTool } from '../tools/task-delegation.js';
 import { registerLookAtTool } from '../tools/look-at.js';
@@ -40,7 +34,6 @@ import { readState, writeState, ensureDir } from '../utils/state.js';
 import { createMockApi, createMockConfig } from './helpers/mock-factory.js';
 
 const createMockApiAny = createMockApi as (...args: any[]) => any;
-const mockedExecFile = vi.mocked(execFile) as any;
 
 // ─── Delegate Tool Tests ────────────────────────────────────────────
 
@@ -354,11 +347,7 @@ describe('registerLookAtTool', () => {
     expect(toolConfig.optional).toBe(true);
   });
 
-  it('calls execFile with correct arguments', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      cb(null, 'Analysis result text', '');
-    });
-
+  it('returns delegation instructions for multimodal analysis', async () => {
     registerLookAtTool(mockApi);
     const toolConfig = mockApi.registerTool.mock.calls[0][0];
 
@@ -368,85 +357,49 @@ describe('registerLookAtTool', () => {
       model: 'gemini-2.5-pro',
     });
 
-    expect(mockedExecFile).toHaveBeenCalledOnce();
-    const [cmd, args, opts] = mockedExecFile.mock.calls[0];
-    expect(cmd).toBe('gemini');
-    expect(args).toEqual(['-m', 'gemini-2.5-pro', '--prompt', 'describe this image', '-f', '/path/to/image.png', '-o', 'text']);
-    expect(opts).toMatchObject({ timeout: 60_000, maxBuffer: 10 * 1024 * 1024 });
-    expect(result.content[0].text).toBe('Analysis result text');
+    expect(result.content[0].text).toContain('Delegate this multimodal analysis now.');
+    expect(result.content[0].text).toContain('sessions_spawn');
+    expect(result.content[0].text).toContain('omoc_looker');
+    expect(result.content[0].text).toContain('/path/to/image.png');
+    expect(result.content[0].text).toContain('gemini-2.5-pro');
   });
 
-  it('uses default model gemini-3-flash-preview when model is not provided', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      cb(null, 'output', '');
-    });
-
-    registerLookAtTool(mockApi);
-    const toolConfig = mockApi.registerTool.mock.calls[0][0];
-
-    await toolConfig.execute('test-call-id', {
-      file_path: '/test.pdf',
-      goal: 'analyze',
-    });
-
-    const [, args] = mockedExecFile.mock.calls[0];
-    expect(args[1]).toBe('gemini-3-flash-preview');
-  });
-
-  it('returns toolError when CLI times out (error.killed === true)', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      const error = new Error('process killed') as any;
-      error.killed = true;
-      cb(error, '', '');
-    });
-
+  it('omits model hint when model is not provided', async () => {
     registerLookAtTool(mockApi);
     const toolConfig = mockApi.registerTool.mock.calls[0][0];
 
     const result = await toolConfig.execute('test-call-id', {
-      file_path: '/large/video.mp4',
+      file_path: '/test.pdf',
+      goal: 'analyze',
+    });
+
+    expect(result.content[0].text).not.toContain('Preferred model hint:');
+  });
+
+  it('returns toolError for empty file_path', async () => {
+    registerLookAtTool(mockApi);
+    const toolConfig = mockApi.registerTool.mock.calls[0][0];
+
+    const result = await toolConfig.execute('test-call-id', {
+      file_path: '   ',
       goal: 'summarize',
     });
 
     expect(result.content[0].text).toContain('Error');
-    expect(result.content[0].text).toContain('timed out after 60 seconds');
+    expect(result.content[0].text).toContain('file_path is required and must not be empty');
   });
 
-  it('returns toolError with stderr detail on non-zero exit', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      const error = new Error('exit 1') as any;
-      error.killed = false;
-      error.code = 1;
-      cb(error, '', 'model not found');
-    });
-
+  it('returns toolError for empty goal', async () => {
     registerLookAtTool(mockApi);
     const toolConfig = mockApi.registerTool.mock.calls[0][0];
 
     const result = await toolConfig.execute('test-call-id', {
       file_path: '/some/file.pdf',
-      goal: 'analyze',
+      goal: '   ',
     });
 
     expect(result.content[0].text).toContain('Error');
-    expect(result.content[0].text).toContain('Gemini CLI failed (exit 1)');
-    expect(result.content[0].text).toContain('model not found');
-  });
-
-  it('returns fallback message for empty stdout', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      cb(null, '   ', '');
-    });
-
-    registerLookAtTool(mockApi);
-    const toolConfig = mockApi.registerTool.mock.calls[0][0];
-
-    const result = await toolConfig.execute('test-call-id', {
-      file_path: '/empty.png',
-      goal: 'describe',
-    });
-
-    expect(result.content[0].text).toBe('(empty response from Gemini CLI)');
+    expect(result.content[0].text).toContain('goal is required and must not be empty');
   });
 
   it('parameters schema has required file_path and goal fields', () => {
@@ -480,11 +433,7 @@ describe('registerWebSearchTool', () => {
     expect(toolConfig.optional).toBe(true);
   });
 
-  it('successful web search returns markdown text', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      cb(null, '## Search Results\n\n- Result 1\n- Result 2', '');
-    });
-
+  it('returns research instructions for valid query', async () => {
     registerWebSearchTool(mockApi);
     const toolConfig = mockApi.registerTool.mock.calls[0][0];
 
@@ -492,15 +441,9 @@ describe('registerWebSearchTool', () => {
       query: 'latest TypeScript features',
     });
 
-    expect(result.content[0].text).toBe('## Search Results\n\n- Result 1\n- Result 2');
-    // Verify no "Error:" prefix
-    expect(result.content[0].text).not.toContain('Error');
-
-    // Verify execFile was called with correct args
-    const [cmd, args, opts] = mockedExecFile.mock.calls[0];
-    expect(cmd).toBe('gemini');
-    expect(args).toEqual(['-m', 'gemini-3-flash-preview', '--prompt', 'latest TypeScript features', '-o', 'text']);
-    expect(opts).toMatchObject({ timeout: 90_000 });
+    expect(result.content[0].text).toContain('Perform grounded web research now.');
+    expect(result.content[0].text).toContain('omoc_librarian');
+    expect(result.content[0].text).toContain('latest TypeScript features');
   });
 
   it('returns toolError for empty query', async () => {
@@ -513,42 +456,6 @@ describe('registerWebSearchTool', () => {
 
     expect(result.content[0].text).toContain('Error');
     expect(result.content[0].text).toContain('Query is required and must not be empty');
-    // execFile should NOT have been called
-    expect(mockedExecFile).not.toHaveBeenCalled();
-  });
-
-  it('returns toolError with stderr on CLI failure', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      const error = new Error('command failed') as any;
-      error.code = 1;
-      cb(error, '', 'authentication error');
-    });
-
-    registerWebSearchTool(mockApi);
-    const toolConfig = mockApi.registerTool.mock.calls[0][0];
-
-    const result = await toolConfig.execute('test-call-id', {
-      query: 'test query',
-    });
-
-    expect(result.content[0].text).toContain('Error');
-    expect(result.content[0].text).toContain('authentication error');
-  });
-
-  it('returns toolError for empty output', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      cb(null, '  ', '');
-    });
-
-    registerWebSearchTool(mockApi);
-    const toolConfig = mockApi.registerTool.mock.calls[0][0];
-
-    const result = await toolConfig.execute('test-call-id', {
-      query: 'some query',
-    });
-
-    expect(result.content[0].text).toContain('Error');
-    expect(result.content[0].text).toContain('Gemini CLI returned empty output');
   });
 
   it('parameter schema has required query field', () => {
@@ -560,21 +467,16 @@ describe('registerWebSearchTool', () => {
     expect(schema.required).toContain('query');
   });
 
-  it('uses custom model when provided', async () => {
-    mockedExecFile.mockImplementation((_cmd: string, _args: string[], _opts: any, cb: Function) => {
-      cb(null, 'results', '');
-    });
-
+  it('includes custom model hint when provided', async () => {
     registerWebSearchTool(mockApi);
     const toolConfig = mockApi.registerTool.mock.calls[0][0];
 
-    await toolConfig.execute('test-call-id', {
+    const result = await toolConfig.execute('test-call-id', {
       query: 'test',
       model: 'gemini-2.5-pro',
     });
 
-    const [, args] = mockedExecFile.mock.calls[0];
-    expect(args[1]).toBe('gemini-2.5-pro');
+    expect(result.content[0].text).toContain('Preferred model hint: gemini-2.5-pro');
   });
 });
 

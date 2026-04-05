@@ -59,6 +59,8 @@ npm install && npm run build
 openclaw plugins install -l .
 ```
 
+`-l` must point at the `plugin/` directory, not the repository root. The repository root does not contain `openclaw.plugin.json`, so `openclaw` may try to interpret it as a hook directory and fail with a `HOOK.md missing` error.
+
 ### Verify
 
 ```bash

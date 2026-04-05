@@ -1,11 +1,8 @@
 import { Type } from '@sinclair/typebox';
-import { execFile } from 'child_process';
 
 import type { OpenClawPluginApi } from '../types.js';
 import { TOOL_PREFIX } from '../types.js';
 import { toolResponse, toolError } from '../utils/helpers.js';
-
-const GEMINI_TIMEOUT_MS = 60_000;
 
 interface LookAtParams {
   file_path: string;
@@ -16,7 +13,7 @@ interface LookAtParams {
 export function registerLookAtTool(api: OpenClawPluginApi) {
   api.registerTool({
     name: `${TOOL_PREFIX}look_at`,
-    description: 'Analyze files (PDF, images, video) using Gemini CLI',
+    description: 'Prepare a multimodal analysis delegation using native OpenClaw tools and the multimodal looker agent',
     parameters: Type.Object({
       file_path: Type.String({ description: 'Path to the file to analyze' }),
       goal: Type.String({ description: 'What to analyze or look for' }),
@@ -28,34 +25,32 @@ export function registerLookAtTool(api: OpenClawPluginApi) {
       ),
     }),
     execute: async (_toolCallId: string, params: LookAtParams) => {
-      const model = params.model ?? 'gemini-3-flash-preview';
+      const filePath = params.file_path?.trim();
+      const goal = params.goal?.trim();
 
-      try {
-        const stdout = await new Promise<string>((resolve, reject) => {
-          execFile(
-            'gemini',
-            ['-m', model, '--prompt', params.goal, '-f', params.file_path, '-o', 'text'],
-            { timeout: GEMINI_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-            (error, stdout, stderr) => {
-              if (error) {
-                if (error.killed) {
-                  reject(new Error(`Gemini CLI timed out after ${GEMINI_TIMEOUT_MS / 1000} seconds`));
-                } else {
-                  const detail = stderr?.trim() || error.message;
-                  reject(new Error(`Gemini CLI failed (exit ${error.code}): ${detail}`));
-                }
-                return;
-              }
-              resolve(stdout);
-            },
-          );
-        });
-
-        return toolResponse(stdout.trim() || '(empty response from Gemini CLI)');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return toolError(message);
+      if (!filePath) {
+        return toolError('file_path is required and must not be empty');
       }
+      if (!goal) {
+        return toolError('goal is required and must not be empty');
+      }
+
+      const preferredModel = params.model?.trim();
+      const instruction = [
+        'Delegate this multimodal analysis now.',
+        '',
+        'Preferred execution order:',
+        '1. Use a native OpenClaw file/browser/image tool if one is available in this session.',
+        '2. If broader analysis is needed, call sessions_spawn for agentId "omoc_looker".',
+        '',
+        `File: ${filePath}`,
+        `Goal: ${goal}`,
+        preferredModel ? `Preferred model hint: ${preferredModel}` : '',
+        '',
+        'Do not stop at planning. Perform the analysis and return the findings.',
+      ].filter(Boolean).join('\n');
+
+      return toolResponse(instruction);
     },
     optional: true,
   });

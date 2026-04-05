@@ -284,7 +284,10 @@ The TypeScript plugin. Enforces orchestration patterns at the code level via the
 ```bash
 cd plugin
 npm install && npm run build
+openclaw plugins install -l .
 ```
+
+Run the local install command from `plugin/`, not from the repository root. The plugin manifest lives at [plugin/openclaw.plugin.json](/Users/ducky/Development/oh-my-openclaw/plugin/openclaw.plugin.json), and installing from the repo root can make `openclaw` treat the path like a hook directory and complain that `HOOK.md` is missing.
 
 ### What It Provides
 

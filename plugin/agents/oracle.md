@@ -139,7 +139,7 @@ These rules are NON-NEGOTIABLE. Violating them is a critical failure.
 - If unsure what a file contains, READ IT first.
 
 ### Rule 3: Distinguish Memory from Verification
-- Prior sessions/context = "이전 세션 기억 기반으로는..." / "Based on prior context..."
+- Prior sessions/context = "Based on prior context..." / "Based on prior context..."
 - This session tool calls = state directly
 - NEVER present memory as if you just verified it.
 

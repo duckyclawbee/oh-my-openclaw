@@ -1,20 +1,54 @@
 import { Type, Static } from '@sinclair/typebox';
-import { OmocPluginApi, TOOL_PREFIX } from '../types.js';
+import { getPluginConfig, type OpenClawPluginApi, type PluginConfig } from '../types.js';
+import { TOOL_PREFIX, LOG_PREFIX } from '../constants.js';
 import { isValidCategory } from '../utils/validation.js';
-import { type Category, LOG_PREFIX } from '../constants.js';
-import { getConfig } from '../utils/config.js';
+import { CATEGORIES, type Category } from '../constants.js';
 import { toolResponse, toolError } from '../utils/helpers.js';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-const DEFAULT_CATEGORY_MODELS: Record<Category, string> = {
-  quick: 'claude-sonnet-4-6',
-  deep: 'claude-opus-4-6-thinking',
-  ultrabrain: 'gpt-5.3-codex',
-  'visual-engineering': 'gemini-3.1-pro',
-  multimodal: 'gemini-3-flash',
-  artistry: 'claude-opus-4-6-thinking',
-  'unspecified-low': 'claude-sonnet-4-6',
-  'unspecified-high': 'claude-opus-4-6-thinking',
-  writing: 'claude-sonnet-4-6',
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// dist/tools/ -> plugin root is dist/../.. = plugin/
+const PLUGIN_DIST_ROOT = join(__dirname, '..', '..');
+
+type ModelRecommendation = {
+  model: string;
+  variant?: string;
+  alternatives?: string[];
+};
+
+type AgentModelRecommendation = {
+  primary: string;
+  variant?: string;
+  fallbacks?: string[];
+};
+
+type AgentModelsFile = {
+  description?: string;
+  agents?: Record<string, AgentModelRecommendation>;
+  categories?: Partial<Record<Category, ModelRecommendation>>;
+};
+
+// Load agent-models.json at module load time
+let AGENT_MODEL_CONFIG: AgentModelsFile = {};
+try {
+  const configPath = join(PLUGIN_DIST_ROOT, 'config', 'agent-models.json');
+  AGENT_MODEL_CONFIG = JSON.parse(readFileSync(configPath, 'utf-8')) as AgentModelsFile;
+} catch (err) {
+  // Fallback to defaults if config file not found
+}
+
+const DEFAULT_CATEGORY_MODELS: Record<Category, ModelRecommendation> = {
+  quick: { model: 'openai/gpt-5.4-mini' },
+  deep: { model: 'openai/gpt-5.4', variant: 'medium' },
+  ultrabrain: { model: 'openai/gpt-5.4', variant: 'xhigh' },
+  'visual-engineering': { model: 'zai-coding-plan/glm-5-turbo' },
+  multimodal: { model: 'openai/gpt-5.4', variant: 'medium' },
+  artistry: { model: 'openai/gpt-5.4', variant: 'xhigh' },
+  'unspecified-low': { model: 'openai/gpt-5.4', variant: 'medium' },
+  'unspecified-high': { model: 'openai/gpt-5.4', variant: 'medium' },
+  writing: { model: 'opencode/gpt-5-nano' },
 };
 
 /** Maps each category to its best-fit sub-agent persona */
@@ -40,22 +74,45 @@ const DelegateParamsSchema = Type.Object({
 
 type DelegateParams = Static<typeof DelegateParamsSchema>;
 
-function getRecommendedModelForCategory(category: Category, api: OmocPluginApi): { model: string; alternatives?: string[] } {
-  const config = getConfig(api);
+function getCategoryRecommendation(category: Category, config: PluginConfig): ModelRecommendation {
   const override = config.model_routing?.[category];
   if (override?.model) {
     return { model: override.model, alternatives: override.alternatives };
   }
-  return { model: DEFAULT_CATEGORY_MODELS[category], alternatives: undefined };
+
+  const categoryConfig = AGENT_MODEL_CONFIG.categories?.[category];
+  if (categoryConfig?.model) {
+    return categoryConfig;
+  }
+
+  return DEFAULT_CATEGORY_MODELS[category];
 }
 
-export function registerDelegateTool(api: OmocPluginApi) {
+function getRecommendedModelForCategory(
+  category: Category,
+  agentId: string,
+  config: PluginConfig,
+): ModelRecommendation {
+  // First try agent-specific model from config/agent-models.json
+  const agentConfig = AGENT_MODEL_CONFIG.agents?.[agentId];
+  if (agentConfig?.primary) {
+    return {
+      model: agentConfig.primary,
+      variant: agentConfig.variant,
+      alternatives: agentConfig.fallbacks,
+    };
+  }
+
+  return getCategoryRecommendation(category, config);
+}
+
+export function registerDelegateTool(api: OpenClawPluginApi) {
   api.registerTool({
     name: `${TOOL_PREFIX}delegate`,
     description: 'Delegate a task to an OpenClaw-native sub-agent with category-based model routing',
     parameters: DelegateParamsSchema,
     execute: async (_toolCallId: string, params: DelegateParams) => {
-      const validCategories = Object.keys(DEFAULT_CATEGORY_MODELS);
+      const validCategories = [...CATEGORIES];
 
       if (!params.task_description?.trim()) {
          return toolError('Task description is required and cannot be empty');
@@ -70,19 +127,22 @@ export function registerDelegateTool(api: OmocPluginApi) {
        }
 
       const category = params.category as Category;
-      const { model, alternatives } = getRecommendedModelForCategory(category, api);
       const agentId = params.agent_id || DEFAULT_CATEGORY_AGENTS[category];
+      const config = getPluginConfig(api);
+      const { model, variant, alternatives } = getRecommendedModelForCategory(category, agentId, config);
+      const modelLabel = variant ? `${model} (${variant})` : model;
 
-       api.logger.info(`${LOG_PREFIX} Delegating task:`, { category, model, agentId });
+      api.logger.info(`${LOG_PREFIX} Delegating task:`, { category, model, variant, agentId });
 
       const instruction = [
-        `Category "${category}" → agent "${agentId}" → model "${model}"`,
+        `Category "${category}" → agent "${agentId}" → model "${modelLabel}"`,
         '',
         '⚡ NOW CALL sessions_spawn with these parameters:',
         `  task: "${params.task_description}"`,
         `  mode: "run"`,
         `  agentId: "${agentId}"`,
         `  # recommended model (do NOT pass to sessions_spawn): ${model}`,
+        variant ? `  # recommended variant (do NOT pass to sessions_spawn): ${variant}` : '',
         alternatives?.length ? `  Recommended fallback models (informational only): ${alternatives.join(', ')}` : '',
         params.background ? '  (background execution — results will arrive via push notification)' : '',
         '',

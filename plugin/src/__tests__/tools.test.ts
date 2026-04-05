@@ -71,7 +71,7 @@ describe('registerDelegateTool', () => {
     });
 
     const text = result.content[0].text;
-    expect(text).toContain('claude-sonnet-4-6');
+    expect(text).toContain('openai/gpt-5.4-mini');
     expect(text).toContain('sessions_spawn');
     expect(text).toContain('test task');
   });
